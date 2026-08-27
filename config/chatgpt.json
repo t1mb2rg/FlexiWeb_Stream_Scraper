@@ -5,9 +5,12 @@
     "input_box": "#prompt-textarea",
     "submit_button": "#composer-submit-button",
     "enter_to_submit": true,
-    
+
     "ai_answer_container": "div[data-turn-id-container]:has(section[data-turn='assistant'])",
-    
+
+    "// wait_for_thought_done_selector": "Do not treat transient thinking UI as the final answer. Wait until real answer content appears inside the new assistant turn before starting stability detection.",
+    "wait_for_thought_done_selector": "p, pre, table, ol, ul, h1, h2, h3, blockquote",
+
     "exclude_selectors": [
       "h4.sr-only",
       "div[aria-label='回复操作']",
@@ -18,7 +21,7 @@
       ".overflow-visible\\! > div",
       "div.contents"
     ],
-    
+
     "// markdown_rules": "核心修正：扁平化直接穿透。放弃对抗频繁变动的中间 markdown 类名，直接从已锁定的容器中提取标签",
     "markdown_rules": {
       "p": {
@@ -78,7 +81,7 @@
       "table": {
         "prefix": "",
         "suffix": "\n\n",
-        "type": "table_output", 
+        "type": "table_output",
         "label": "数据表格"
       }
     }
