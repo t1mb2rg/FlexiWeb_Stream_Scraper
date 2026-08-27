@@ -63,6 +63,48 @@ class SessionStore:
         tmp.replace(self.path)
 
 
+def _page_is_alive(page: Any) -> bool:
+    if page is None:
+        return False
+    checker = getattr(page, "is_closed", None)
+    if not callable(checker):
+        return True
+    try:
+        return not bool(checker())
+    except Exception:
+        return False
+
+
+async def ensure_live_page(browser_mgr: Any) -> Any:
+    """Return a usable page, recovering from a closed tab when the context is still alive."""
+
+    current = getattr(browser_mgr, "page", None)
+    if _page_is_alive(current):
+        return current
+
+    context = getattr(browser_mgr, "context", None)
+    if context is None:
+        raise RuntimeError("browser context is unavailable")
+
+    try:
+        pages = list(context.pages)
+    except Exception as exc:
+        raise RuntimeError(f"browser context is unavailable: {exc}") from exc
+
+    for candidate in reversed(pages):
+        if _page_is_alive(candidate):
+            browser_mgr.page = candidate
+            return candidate
+
+    try:
+        page = await context.new_page()
+    except Exception as exc:
+        raise RuntimeError(f"browser context is unavailable: {exc}") from exc
+
+    browser_mgr.page = page
+    return page
+
+
 async def _run_session_turn(scraper: Any, prompt: str) -> None:
     """Run one turn with an atomic input fill when the scraper exposes browser primitives.
 
@@ -218,19 +260,31 @@ def install_session_api(
     async def ask_ai_sync(request: SessionAskRequest) -> SessionAskResponse:
         async with browser_lock:
             try:
-                scraper = scraper_factory(request.site, browser_mgr.page)
-            except FileNotFoundError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                page = await ensure_live_page(browser_mgr)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
 
             target_url = request.conversation_url or store.get(request.session_id)
             if target_url:
                 try:
-                    await browser_mgr.page.goto(target_url)
+                    await page.goto(target_url)
                 except Exception as exc:
-                    raise HTTPException(
-                        status_code=502,
-                        detail=f"failed to open requested conversation: {exc}",
-                    ) from exc
+                    # The tab can disappear between the liveness check and navigation.
+                    # Reacquire once before declaring the browser unavailable.
+                    browser_mgr.page = None
+                    try:
+                        page = await ensure_live_page(browser_mgr)
+                        await page.goto(target_url)
+                    except Exception as retry_exc:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"failed to open requested conversation: {retry_exc}",
+                        ) from retry_exc
+
+            try:
+                scraper = scraper_factory(request.site, page)
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             try:
                 await _run_session_turn(scraper, request.prompt)
@@ -243,7 +297,7 @@ def install_session_api(
                 if output and hasattr(scraper.logger, "append_chunk"):
                     scraper.logger.append_chunk("final_output", output)
 
-            current_url = str(getattr(browser_mgr.page, "url", "") or "")
+            current_url = str(getattr(page, "url", "") or "")
             if request.session_id and current_url:
                 store.set(request.session_id, current_url)
 
